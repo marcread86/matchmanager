@@ -1,5 +1,5 @@
 /* global React */
-/* Cloud sync for MPB Rangers — Cloudflare Access + Pages Functions + D1.
+/* Cloud sync for Match Manager — Cloudflare Access + Pages Functions + D1.
  *
  *  /api/me     GET  → { email, loggedIn, logoutUrl } | { loggedIn:false }
  *  /api/state  GET  → { state, updatedAt }

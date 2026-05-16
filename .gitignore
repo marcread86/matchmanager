@@ -1,5 +1,7 @@
-# Built artefacts
+# Built artefacts (bundler exports — regenerate on demand)
+*.bundled.html
 MPB Rangers Squad Manager.html
+Match Manager.html
 
 # Editor / agent scratch
 screenshots/

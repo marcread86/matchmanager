@@ -1,5 +1,5 @@
--- MPB Rangers — cloud sync schema for Cloudflare D1
--- Run with: wrangler d1 execute mpb-rangers --remote --file=schema.sql
+-- Match Manager — cloud sync schema for Cloudflare D1
+-- Run with: wrangler d1 execute matchmanager --remote --file=schema.sql
 
 CREATE TABLE IF NOT EXISTS user_state (
     email      TEXT PRIMARY KEY,

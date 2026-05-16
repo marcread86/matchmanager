@@ -617,7 +617,7 @@ function SquadLibrary({ state, setState, onImportCsv }) {
         const id = uid();
         setState(s => ({
             ...s,
-            squads: [...s.squads, { id, name: 'Sample (MPB Rangers)', players: sample }],
+            squads: [...s.squads, { id, name: 'Sample squad', players: sample }],
         }));
         setTimeout(() => switchTo(id), 0);
     }
@@ -875,7 +875,7 @@ function SquadEditor({ state, setState }) {
 
     function exportJson() {
         const payload = {
-            __format: 'mpb-rangers-squad-manager/v1',
+            __format: 'matchmanager/v1',
             exportedAt: new Date().toISOString(),
             squad: state.squad,
             score: state.score,
@@ -904,7 +904,7 @@ function SquadEditor({ state, setState }) {
 
     function exportToClipboard() {
         const payload = {
-            __format: 'mpb-rangers-squad-manager/v1',
+            __format: 'matchmanager/v1',
             squad: state.squad,
             score: state.score, teamName: state.teamName, crest: state.crest,
             formation: state.formation, slots: state.slots, phase: state.phase,
@@ -1021,7 +1021,7 @@ function SquadEditor({ state, setState }) {
                     className="backup-paste"
                     value={importText}
                     onChange={e => setImportText(e.target.value)}
-                    placeholder='{"__format":"mpb-rangers-squad-manager/v1", "squad": [...] ...}'
+                    placeholder='{"__format":"matchmanager/v1", "squad": [...] ...}'
                     rows={6}
                 />
                 <div className="backup-actions">
