@@ -1,0 +1,20 @@
+# Built artefacts
+MPB Rangers Squad Manager.html
+
+# Editor / agent scratch
+screenshots/
+uploads/
+.napkin/
+*.napkin
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Node / wrangler (only present if you ever use them locally)
+node_modules/
+.wrangler/
+.dev.vars
