@@ -1,7 +1,12 @@
 // Squad + formations + position compatibility
 // Kept compatible with the original csm2 localStorage shape.
 
-window.SQUAD = [
+// Default squad — empty. New users start with a blank squad; the in-app
+// editor (+ Add player) and CSV import populate it. A sample roster is
+// available on window.SAMPLE_SQUAD for the "Load sample" action.
+window.SQUAD = [];
+
+window.SAMPLE_SQUAD = [
     { id:1,  n:1,  name:"Matt Barker",           positions:["RB","RW"] },
     { id:2,  n:2,  name:"Garee Hilsdon",         positions:["CB","CDM"] },
     { id:3,  n:3,  name:"Asal Malekinia",        positions:["CM","RM"] },

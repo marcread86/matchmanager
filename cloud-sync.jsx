@@ -106,15 +106,22 @@ function SyncBadge({ sync }) {
     error:    { txt: 'Error',     tone: 'warn' },
   };
   const v = labels[status] || labels.local;
+  const interactive = !!user; // only clickable when there's a logout to fire
   const title = user
     ? `Signed in as ${user.email}${user.logoutUrl ? ' — tap to sign out' : ''}`
-    : 'Not signed in — data saved locally only';
-  function onClick() {
+    : 'Saved on this device only';
+  function onClick(e) {
+    e.preventDefault();
     if (user?.logoutUrl) window.location.href = user.logoutUrl;
-    else if (!user) window.location.href = '/api/me?login=1';
   }
   return (
-    <button className={"sync-badge tone-" + v.tone} onClick={onClick} title={title}>
+    <button
+      type="button"
+      className={"sync-badge tone-" + v.tone + (interactive ? '' : ' static')}
+      onClick={onClick}
+      title={title}
+      aria-disabled={!interactive}
+    >
       <span className="sync-dot"></span>
       <span className="sync-txt">{v.txt}</span>
       {user && <span className="sync-email">{user.email.split('@')[0]}</span>}

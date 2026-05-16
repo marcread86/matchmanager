@@ -611,6 +611,17 @@ function SquadLibrary({ state, setState, onImportCsv }) {
     const [armedDelete, setArmedDelete] = useState(false);
     const active = state.squads.find(s => s.id === state.activeSquadId) || state.squads[0];
 
+    function loadSample() {
+        const sample = (window.SAMPLE_SQUAD || []).map(p => ({ ...p, positions: [...p.positions] }));
+        if (!sample.length) return;
+        const id = uid();
+        setState(s => ({
+            ...s,
+            squads: [...s.squads, { id, name: 'Sample (MPB Rangers)', players: sample }],
+        }));
+        setTimeout(() => switchTo(id), 0);
+    }
+
     function switchTo(id) {
         if (id === state.activeSquadId) return;
         setState(s => {
@@ -721,6 +732,9 @@ function SquadLibrary({ state, setState, onImportCsv }) {
                 <button className="filter-chip" onClick={addBlank}>+ New</button>
                 <button className="filter-chip" onClick={duplicate}>⎘ Duplicate</button>
                 <button className="filter-chip" onClick={onImportCsv}>⤓ Import CSV</button>
+                {(window.SAMPLE_SQUAD || []).length > 0 && state.squad.length === 0 && (
+                    <button className="filter-chip" onClick={loadSample}>★ Load sample</button>
+                )}
                 <button
                     className={"filter-chip danger-chip" + (armedDelete ? ' armed' : '')}
                     onClick={deleteActive}
@@ -959,6 +973,12 @@ function SquadEditor({ state, setState }) {
                 <button className="filter-chip" onClick={() => setBackupSheet(true)}>⤓ Backup</button>
             </div>
             <div className="squad-edit-list">
+                {state.squad.length === 0 && (
+                    <div className="squad-empty">
+                        <div className="squad-empty-title">No players yet</div>
+                        <div className="squad-empty-sub">Tap <b>+ Add player</b> above, or <b>Import CSV</b> from the squad card to populate this squad.</div>
+                    </div>
+                )}
                 {state.squad.map(p => (
                     <PlayerEditor key={p.id} p={p}
                         onUpdate={(patch) => updatePlayer(p.id, patch)}

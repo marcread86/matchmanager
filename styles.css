@@ -1452,6 +1452,32 @@ button {
 .sync-badge.tone-go .sync-dot   { background: var(--mpb-glacier); animation: pulse 1.4s ease-out infinite; }
 .sync-badge.tone-warn .sync-dot { background: var(--warn); }
 .sync-badge.tone-mute .sync-dot { background: var(--text-3); }
+.sync-badge.static {
+    cursor: default;
+}
+
+.squad-empty {
+    padding: 28px 20px;
+    text-align: center;
+    background: var(--surface);
+    border: 1px dashed var(--line);
+    border-radius: var(--radius);
+}
+.squad-empty-title {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 6px;
+}
+.squad-empty-sub {
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text-3);
+}
+.squad-empty-sub b {
+    color: var(--text-2);
+    font-weight: 600;
+}
 
 /* ============================================================
    RESPONSIVE LARGER VIEWPORT (tablet / desktop preview)
