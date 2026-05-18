@@ -9,8 +9,16 @@
     <meta name="apple-mobile-web-app-title" content="Match Manager" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="application-name" content="Match Manager" />
-    <link rel="apple-touch-icon" href="assets/icon-192.png" />
-    <link rel="icon" type="image/png" href="assets/icon-192.png" />
+
+    <!-- iOS Add to Home Screen icon (180×180 is the canonical modern size) -->
+    <link rel="apple-touch-icon" href="assets/apple-touch-icon.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png" />
+    <!-- Android / browser favicons -->
+    <link rel="icon" type="image/png" sizes="192x192" href="assets/icon-192.png" />
+    <link rel="icon" type="image/png" sizes="512x512" href="assets/icon-512.png" />
+    <!-- PWA manifest -->
+    <link rel="manifest" href="manifest.json" />
+
     <title>Match Manager</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -36,6 +44,7 @@
     <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
 
     <script src="data.js"></script>
+    <script src="lineup-export.js"></script>
     <script type="text/babel" src="tweaks-panel.jsx"></script>
     <script type="text/babel" src="cloud-sync.jsx"></script>
     <script type="text/babel" src="welcome.jsx"></script>

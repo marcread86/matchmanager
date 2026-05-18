@@ -618,6 +618,15 @@ function Lineups({ state, setState, onManage }) {
                         ⋯
                     </button>
                 )}
+                <button
+                    className="lineup-share-btn"
+                    onClick={() => window.exportLineupImage?.(state)}
+                    disabled={onPitch === 0}
+                    title={onPitch === 0 ? "Put players on the pitch first" : "Export lineup as an image"}
+                    aria-label="Share lineup as image"
+                >
+                    ↗
+                </button>
             </div>
         </div>
     );
@@ -746,12 +755,13 @@ function HelpSheet({ open, onClose }) {
         {
             id: 'lineups',
             icon: '📋',
-            title: 'Saved lineups',
+            title: 'Saved lineups & sharing',
             body: (
                 <>
                     <p>Set up your XI on the pitch, then tap <b>+ Save</b> in the Lineups row. Give it a name (e.g. <i>“Starting XI”</i>, <i>“Defensive”</i>) — it's saved.</p>
                     <p>Tap any saved chip to instantly reload that formation and lineup. The match clock and scores aren't affected.</p>
                     <p>The <b>⋯</b> button lets you rename or delete lineups (two-tap to delete).</p>
+                    <p>The <b>↗</b> button exports the current pitch as an image — share it to WhatsApp / Notes / a group chat. Includes team names, score, formation and clock.</p>
                 </>
             ),
         },

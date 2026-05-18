@@ -1,0 +1,24 @@
+{
+  "name": "Match Manager",
+  "short_name": "Match Manager",
+  "description": "Pitch-side football squad manager",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b002b",
+  "theme_color": "#0b002b",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "assets/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "assets/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
