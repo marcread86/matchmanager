@@ -30,6 +30,8 @@ function loadInitial() {
     const def = {
         formation: '4-4-2',
         matchSec: 0,
+        clockStartedAt: null,                   // wall-clock timestamp (Date.now()) when current 1H/2H run began; null when paused
+        matchSecBase: 0,                        // matchSec snapshot at the moment clockStartedAt was set
         slots: buildSlots('4-4-2'),
         playerTimes: emptyTimes(),
         playerStatus: emptyStatus(),
@@ -42,8 +44,9 @@ function loadInitial() {
         goals: [],
         history: [],
         squad: defaultPlayers,                  // mirror of active library entry
-        squads: [{ id: defaultSquadId, name: 'My Squad', players: defaultPlayers }],
+        squads: [{ id: defaultSquadId, name: 'BHA Test', players: defaultPlayers }],
         activeSquadId: defaultSquadId,
+        lineups: [],                            // saved formation + slot presets
         updatedAt: 0,                           // sync clock — bumped on every change
     };
     try {
@@ -54,15 +57,19 @@ function loadInitial() {
             let activeSquadId = cur.activeSquadId;
             if (!squads) {
                 const id = defaultSquadId;
-                squads = [{ id, name: 'My Squad', players: cur.squad || defaultPlayers }];
+                squads = [{ id, name: 'BHA Test', players: cur.squad || defaultPlayers }];
                 activeSquadId = id;
             }
             const active = squads.find(s => s.id === activeSquadId) || squads[0];
             if (active?.players) window.SQUAD = active.players;
-            return Object.assign(def, cur, {
+            // If the clock was running when the app was last open, catch it
+            // up to wall-clock time. Cap absurd gaps (> 3h) so reopening the
+            // app the next day doesn't show a 14-hour match.
+            const merged = Object.assign(def, cur, {
                 squads,
                 activeSquadId: active?.id || squads[0].id,
                 squad: active?.players || cur.squad || def.squad,
+                lineups: Array.isArray(cur.lineups) ? cur.lineups : def.lineups,
                 playerTimes:  Object.assign(emptyTimes(),  cur.playerTimes  || {}),
                 playerStatus: Object.assign(emptyStatus(), cur.playerStatus || {}),
                 score: cur.score || def.score,
@@ -72,7 +79,18 @@ function loadInitial() {
                 goals: cur.goals || [],
                 history: cur.history || [],
                 updatedAt: cur.updatedAt || 0,
+                clockStartedAt: cur.clockStartedAt || null,
+                matchSecBase: cur.matchSecBase ?? cur.matchSec ?? 0,
             });
+            if (merged.clockStartedAt) {
+                const gap = Date.now() - merged.clockStartedAt;
+                if (gap > 3 * 60 * 60 * 1000 || gap < 0) {
+                    // Stale anchor — assume the match was forgotten. Keep the
+                    // last known matchSec but stop running.
+                    merged.clockStartedAt = null;
+                }
+            }
+            return merged;
         }
         const legacy = JSON.parse(localStorage.getItem(LEGACY_KEY) || 'null');
         if (legacy) {
@@ -139,7 +157,7 @@ function Crest({ team, src, letter, onSet }) {
     );
 }
 
-function TopBar({ state, dispatch, onAdvancePhase, onReset, onTapScore, onSetCrest, onTapClock, resetArmed, sync, onShowWelcome }) {
+function TopBar({ state, dispatch, onAdvancePhase, onReset, onTapScore, onSetCrest, onTapClock, resetArmed, sync, onShowWelcome, onShowHelp }) {
     const { score, teamName, crest, phase, matchSec } = state;
     const info = PHASE_INFO[phase];
     const usLetter   = teamName.us.trim().charAt(0).toUpperCase()   || '+';
@@ -152,6 +170,17 @@ function TopBar({ state, dispatch, onAdvancePhase, onReset, onTapScore, onSetCre
                     <span className="dot"></span>{info.label}
                 </div>
                 {sync && <SyncBadge sync={sync} onShowWelcome={onShowWelcome} />}
+                <button
+                    className="tb-help"
+                    onClick={onShowHelp}
+                    aria-label="Help"
+                    title="Help & guide"
+                >
+                    ?
+                </button>
+                <div className="tb-mark" aria-hidden="true">
+                    <img src="assets/icon-192.png" alt="" />
+                </div>
                 <button className="tb-clock" onClick={onTapClock} title="Tap to edit">
                     {fmt(matchSec)}
                 </button>
@@ -464,14 +493,398 @@ function Sheet({ open, onClose, title, sub, children }) {
     );
 }
 
+// ─────────────────────────────────────────────────────────────
+//  LINEUPS  (saved formation + slot presets)
+// ─────────────────────────────────────────────────────────────
+function Lineups({ state, setState, onManage }) {
+    const [naming, setNaming] = React.useState(false);
+    const [draft, setDraft] = React.useState('');
+    const inputRef = React.useRef(null);
+
+    React.useEffect(() => {
+        if (naming) setTimeout(() => inputRef.current?.focus(), 10);
+    }, [naming]);
+
+    const lineups = state.lineups || [];
+    const onPitch = state.slots.filter(s => s.playerId).length;
+
+    function saveCurrent(name) {
+        const trimmed = (name || '').trim();
+        if (!trimmed) return;
+        setState(s => {
+            const lineup = {
+                id: uid(),
+                name: trimmed,
+                formation: s.formation,
+                slots: s.slots.map(sl => ({ slotPos: sl.slotPos, label: sl.label, playerId: sl.playerId || null })),
+                savedAt: Date.now(),
+            };
+            return { ...s, lineups: [...(s.lineups || []), lineup] };
+        });
+        setNaming(false);
+        setDraft('');
+    }
+
+    function loadLineup(lineup) {
+        setState(s => {
+            // Commit timing on outgoing players before swapping the pitch
+            const playerTimes = { ...s.playerTimes };
+            const running = s.phase === '1h' || s.phase === '2h';
+            s.slots.forEach(sl => {
+                if (sl.playerId) {
+                    const pt = playerTimes[sl.playerId];
+                    if (pt && pt.onSince !== null) {
+                        playerTimes[sl.playerId] = { total: pt.total + (s.matchSec - pt.onSince), onSince: null };
+                    }
+                }
+            });
+
+            // Build new slots from the saved lineup. Drop any players not on
+            // the current active squad (e.g. CSV-imported a different roster).
+            const activeIds = new Set(s.squad.map(p => p.id));
+            const newSlots = lineup.slots.map(sl => ({
+                slotPos: sl.slotPos,
+                label: sl.label,
+                playerId: (sl.playerId && activeIds.has(sl.playerId)) ? sl.playerId : null,
+            }));
+
+            // Re-anchor on-pitch onSince for fresh players if match is running
+            if (running) {
+                newSlots.forEach(sl => {
+                    if (sl.playerId) {
+                        const pt = playerTimes[sl.playerId] || { total: 0, onSince: null };
+                        playerTimes[sl.playerId] = { ...pt, onSince: s.matchSec };
+                    }
+                });
+            }
+
+            return {
+                ...s,
+                formation: lineup.formation,
+                slots: newSlots,
+                playerTimes,
+                history: [...(s.history || []), { at: s.matchSec, kind: 'card', text: `— Lineup: ${lineup.name} —` }],
+            };
+        });
+    }
+
+    return (
+        <div className="lineups">
+            <div className="lineups-row">
+                <span className="lineups-label">Lineups</span>
+                <div className="lineups-scroll">
+                    {lineups.length === 0 && !naming && (
+                        <span className="lineups-empty">No saved lineups yet — tap “Save” when you’ve picked your XI.</span>
+                    )}
+                    {lineups.map(l => (
+                        <button
+                            key={l.id}
+                            className="lineup-chip"
+                            onClick={() => loadLineup(l)}
+                            title={`Load lineup: ${l.name} (${l.formation})`}
+                        >
+                            <span className="lineup-chip-name">{l.name}</span>
+                            <span className="lineup-chip-form">{l.formation}</span>
+                        </button>
+                    ))}
+                </div>
+                {!naming ? (
+                    <button
+                        className="lineup-save-btn"
+                        onClick={() => { setDraft(`XI ${(lineups.length + 1)}`); setNaming(true); }}
+                        disabled={onPitch === 0}
+                        title={onPitch === 0 ? "Put players on the pitch first" : "Save current lineup"}
+                    >
+                        + Save
+                    </button>
+                ) : (
+                    <div className="lineup-save-form">
+                        <input
+                            ref={inputRef}
+                            type="text"
+                            className="lineup-save-input"
+                            value={draft}
+                            placeholder="Name this lineup"
+                            onChange={e => setDraft(e.target.value)}
+                            onKeyDown={e => {
+                                if (e.key === 'Enter') saveCurrent(draft);
+                                if (e.key === 'Escape') { setNaming(false); setDraft(''); }
+                            }}
+                            maxLength={30}
+                        />
+                        <button className="lineup-save-confirm" onClick={() => saveCurrent(draft)}>Save</button>
+                        <button className="lineup-save-cancel" onClick={() => { setNaming(false); setDraft(''); }}>×</button>
+                    </div>
+                )}
+                {lineups.length > 0 && !naming && (
+                    <button className="lineup-manage-btn" onClick={onManage} title="Rename or delete lineups">
+                        ⋯
+                    </button>
+                )}
+            </div>
+        </div>
+    );
+}
+
+function LineupManageSheet({ open, onClose, state, setState }) {
+    const lineups = state.lineups || [];
+    const [armedDelete, setArmedDelete] = React.useState(null);
+
+    function rename(id, name) {
+        const trimmed = (name || '').trim();
+        if (!trimmed) return;
+        setState(s => ({
+            ...s,
+            lineups: (s.lineups || []).map(l => l.id === id ? { ...l, name: trimmed } : l),
+        }));
+    }
+    function remove(id) {
+        if (armedDelete !== id) {
+            setArmedDelete(id);
+            setTimeout(() => setArmedDelete(curr => curr === id ? null : curr), 3000);
+            return;
+        }
+        setArmedDelete(null);
+        setState(s => ({ ...s, lineups: (s.lineups || []).filter(l => l.id !== id) }));
+    }
+
+    return (
+        <Sheet
+            open={open}
+            onClose={onClose}
+            title="Manage lineups"
+            sub={lineups.length ? `${lineups.length} saved` : 'Save a lineup from the Match tab to manage it here.'}
+        >
+            {lineups.length === 0 && (
+                <div className="empty">No saved lineups yet.</div>
+            )}
+            {lineups.map(l => {
+                const filledCount = l.slots.filter(s => s.playerId).length;
+                return (
+                    <div key={l.id} className="lineup-manage-row">
+                        <input
+                            className="lineup-manage-name"
+                            type="text"
+                            defaultValue={l.name}
+                            maxLength={30}
+                            onBlur={e => rename(l.id, e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); }}
+                        />
+                        <span className="lineup-manage-meta">
+                            {l.formation} · {filledCount}/{l.slots.length}
+                        </span>
+                        <button
+                            className={"lineup-manage-del" + (armedDelete === l.id ? ' armed' : '')}
+                            onClick={() => remove(l.id)}
+                            aria-label={`Delete ${l.name}`}
+                        >
+                            {armedDelete === l.id ? '✓' : '×'}
+                        </button>
+                    </div>
+                );
+            })}
+        </Sheet>
+    );
+}
+
+function ResetAction({ label, sub, icon, tone, onConfirm }) {
+    const [armed, setArmed] = React.useState(false);
+    function tap() {
+        if (!armed) {
+            setArmed(true);
+            setTimeout(() => setArmed(false), 3000);
+            return;
+        }
+        setArmed(false);
+        onConfirm();
+    }
+    return (
+        <button
+            className={"reset-action" + (armed ? ' armed' : '') + (tone === 'danger' ? ' danger' : '')}
+            onClick={tap}
+        >
+            <span className="reset-action-icon">{icon}</span>
+            <span className="reset-action-text">
+                <span className="reset-action-label">{armed ? 'Tap again to confirm' : label}</span>
+                <span className="reset-action-sub">{sub}</span>
+            </span>
+        </button>
+    );
+}
+
+function HelpSheet({ open, onClose }) {
+    const [openSection, setOpenSection] = React.useState('start');
+    const sections = [
+        {
+            id: 'start',
+            icon: '👋',
+            title: 'Quick start',
+            body: (
+                <>
+                    <p>Three taps and you're playing:</p>
+                    <ol>
+                        <li>Tap <b>Squad</b> → add players, or use <b>Import CSV</b> / <b>Load sample</b>.</li>
+                        <li>Back on <b>Match</b>, tap each empty pitch slot and pick a player.</li>
+                        <li>Tap <b>Kick Off</b>. The clock starts; player times tick up.</li>
+                    </ol>
+                </>
+            ),
+        },
+        {
+            id: 'match',
+            icon: '⚽',
+            title: 'During the match',
+            body: (
+                <>
+                    <ul>
+                        <li><b>Tap a pitch player</b> to sub them, give a card, or mark them injured.</li>
+                        <li><b>Tap a bench player's “Sub In”</b> to bring them on — pick any slot, including off-position.</li>
+                        <li><b>Move a player to a different position</b> — tap them on the pitch, then choose from <i>“Move … to”</i> in the sheet. If the target slot has someone, they swap places.</li>
+                        <li><b>Score a goal</b> — tap either team's score number. For your team you can pick the scorer.</li>
+                        <li><b>Edit the clock</b> — tap the big time at the top.</li>
+                    </ul>
+                </>
+            ),
+        },
+        {
+            id: 'lineups',
+            icon: '📋',
+            title: 'Saved lineups',
+            body: (
+                <>
+                    <p>Set up your XI on the pitch, then tap <b>+ Save</b> in the Lineups row. Give it a name (e.g. <i>“Starting XI”</i>, <i>“Defensive”</i>) — it's saved.</p>
+                    <p>Tap any saved chip to instantly reload that formation and lineup. The match clock and scores aren't affected.</p>
+                    <p>The <b>⋯</b> button lets you rename or delete lineups (two-tap to delete).</p>
+                </>
+            ),
+        },
+        {
+            id: 'squad',
+            icon: '👥',
+            title: 'Squad library & CSV import',
+            body: (
+                <>
+                    <p>You can keep multiple squads (e.g. <i>Saturday team</i>, <i>Sunday team</i>, <i>Opponents</i>) and switch between them. Look in the <b>Squad</b> tab's library card at the top.</p>
+                    <p><b>CSV format</b> — one row per player. Columns: Number, Name, Positions (join multiples with <code>|</code>):</p>
+                    <pre>{`Number,Name,Positions
+1,Matt Barker,RB|RW
+2,Garee Hilsdon,CB|CDM
+9,Phil Smith,ALL`}</pre>
+                    <p>Tap <b>Import CSV</b> in the squad library to bring a roster in. Choose <i>“Save as new squad”</i> or <i>“Replace active”</i>.</p>
+                </>
+            ),
+        },
+        {
+            id: 'sub',
+            icon: '🔁',
+            title: 'Position fit & off-position subs',
+            body: (
+                <>
+                    <p>When picking a player for a slot you'll see tags:</p>
+                    <ul>
+                        <li><b>EXACT</b> — their natural position.</li>
+                        <li><b>FIT</b> — compatible (e.g. a CB can fill CDM).</li>
+                        <li><b>ALL</b> — utility players marked “ALL”.</li>
+                        <li><b>OFF-POS</b> — out of position (still selectable — the row is dimmed with a dashed border).</li>
+                    </ul>
+                    <p>Sorted top-to-bottom by fit, then by least time played.</p>
+                </>
+            ),
+        },
+        {
+            id: 'auth',
+            icon: '🔐',
+            title: 'Sign in & sync',
+            body: (
+                <>
+                    <p>The badge in the top bar shows your status:</p>
+                    <ul>
+                        <li><b>Sign in</b> (green tint) — you're using the app locally; data saves on this device only. Tap to sign in.</li>
+                        <li><b>Synced &lt;name&gt;</b> — your data is saved to the cloud and follows you across devices.</li>
+                        <li><b>Syncing…</b> — change being pushed to the cloud.</li>
+                    </ul>
+                    <p>Signing in uses Cloudflare's secure one-time-code email. No password to remember. Sessions last a month, after which you'll see a banner asking you to sign in again — your data is safe and waits for you.</p>
+                </>
+            ),
+        },
+        {
+            id: 'reset',
+            icon: '⚙️',
+            title: 'Reset & clock edit',
+            body: (
+                <>
+                    <p>Tap <b>Reset</b> in the top bar. Three options:</p>
+                    <ul>
+                        <li><b>New match</b> — clears clock, score, cards, history & player times. Keeps the current lineup ready to kick off again.</li>
+                        <li><b>Clear the pitch</b> — takes everyone off. Clock and score stay running.</li>
+                        <li><b>Reset everything</b> — full wipe.</li>
+                    </ul>
+                    <p>Each reset asks for a second tap to confirm.</p>
+                    <p>To <b>edit the clock</b> — tap the big time at the top. Useful after a crash or to correct a mis-press.</p>
+                </>
+            ),
+        },
+        {
+            id: 'background',
+            icon: '📱',
+            title: 'Mobile — clock keeps running',
+            body: (
+                <>
+                    <p>When the phone locks or you switch to another app, the browser pauses JavaScript timers. Match Manager handles this — the clock is anchored to <b>real wall-clock time</b>, so the moment you return to the app it instantly catches up.</p>
+                    <p>No manual sync needed.</p>
+                    <p>(Safety: if the app was left running for more than 3 hours, on reopen it won't add the gap — it keeps the last known time so you can edit it yourself if needed.)</p>
+                </>
+            ),
+        },
+        {
+            id: 'tweaks',
+            icon: '🛠️',
+            title: 'Tweaks',
+            body: (
+                <>
+                    <p>Tap the floating <b>Tweaks</b> button (bottom-right) to change theme (dark / contrast / light), accent colour, and density (standard / big-tap). Also hides/shows the Pool and Log tabs.</p>
+                </>
+            ),
+        },
+    ];
+
+    return (
+        <Sheet open={open} onClose={onClose} title="Help & guide" sub="Tap a section to expand.">
+            <div className="help-sections">
+                {sections.map(s => (
+                    <div key={s.id} className={"help-section" + (openSection === s.id ? ' open' : '')}>
+                        <button
+                            className="help-section-head"
+                            onClick={() => setOpenSection(openSection === s.id ? null : s.id)}
+                        >
+                            <span className="help-section-icon">{s.icon}</span>
+                            <span className="help-section-title">{s.title}</span>
+                            <span className="help-section-chev">{openSection === s.id ? '−' : '+'}</span>
+                        </button>
+                        {openSection === s.id && <div className="help-section-body">{s.body}</div>}
+                    </div>
+                ))}
+            </div>
+        </Sheet>
+    );
+}
+
 function CandidateRow({ p, slotPos, time, onPick }) {
     const exact = p.positions.includes(slotPos);
     const isAll = p.positions.includes('ALL');
-    const tagText = exact ? 'EXACT' : isAll ? 'ALL' : 'FIT';
-    const tagCls = exact ? 'exact' : isAll ? 'all' : 'compat';
+    const compat = !exact && !isAll && window.canPlay?.(p, slotPos);
+    const offPos = !exact && !isAll && !compat;
+    let tagText, tagCls;
+    if (exact)       { tagText = 'EXACT';   tagCls = 'exact'; }
+    else if (isAll)  { tagText = 'ALL';     tagCls = 'all'; }
+    else if (compat) { tagText = 'FIT';     tagCls = 'compat'; }
+    else             { tagText = 'OFF-POS'; tagCls = 'offpos'; }
     const posTag = isAll ? 'ALL' : p.positions.join('/');
     return (
-        <button className={"cand" + (exact ? ' exact' : '')} onClick={() => onPick(p.id)}>
+        <button
+            className={"cand" + (exact ? ' exact' : '') + (offPos ? ' offpos' : '')}
+            onClick={() => onPick(p.id)}
+        >
             <div className="cand-num">{p.n}</div>
             <div className="cand-info">
                 <div className="cand-name">{p.name}</div>
@@ -1111,11 +1524,13 @@ function App({ tweaks, onShowWelcome }) {
     const [activeSlot, setActiveSlot] = useState(null); // slot index or null
     const [activePlayer, setActivePlayer] = useState(null); // bench player id we're trying to sub on
     const [goalSheet, setGoalSheet] = useState(null); // {team:'us'|'them'} | null
-    const [resetArmed, setResetArmed] = useState(false); // 2-tap confirm
+    const [resetSheet, setResetSheet] = useState(false);
     const [clockEdit, setClockEdit] = useState(null); // {mins, secs} | null
     const [view, setView] = useState('match'); // 'match' | 'history' | 'pool' | 'squad'
     const [sortMode, setSortMode] = useState('least');
     const [justSubbed, setJustSubbed] = useState(null);
+    const [lineupSheet, setLineupSheet] = useState(false);
+    const [helpSheet, setHelpSheet] = useState(false);
 
     const running = state.phase === '1h' || state.phase === '2h';
 
@@ -1141,15 +1556,48 @@ function App({ tweaks, onShowWelcome }) {
     // Cloud sync (Cloudflare Access + Pages Functions + D1). No-op when not signed in.
     const sync = useCloudSync(state, setState);
 
-    // clock tick
+    // clock tick — drives both the running clock AND a re-render so that
+    // the wall-clock-derived display stays current. When the device
+    // backgrounds the tab the interval is paused/throttled; on resume the
+    // visibilitychange listener (below) triggers an immediate catch-up.
     useEffect(() => {
         if (!running) return;
-        const id = setInterval(() => {
-            setState(s => ({ ...s, matchSec: s.matchSec + 1 }));
+        function tick() {
+            setState(s => {
+                if (!s.clockStartedAt) return s;
+                const live = s.matchSecBase + Math.floor((Date.now() - s.clockStartedAt) / 1000);
+                if (live === s.matchSec) return s;
+                return { ...s, matchSec: live };
+            });
             setTickN(n => n + 1);
-        }, 1000);
+        }
+        tick(); // immediate catch-up on mount / resume
+        const id = setInterval(tick, 1000);
         return () => clearInterval(id);
     }, [running]);
+
+    // When the tab becomes visible again on mobile, force an immediate
+    // re-sync rather than waiting for the next 1s interval to fire.
+    useEffect(() => {
+        function onVis() {
+            if (document.visibilityState !== 'visible') return;
+            setState(s => {
+                if (!s.clockStartedAt) return s;
+                const live = s.matchSecBase + Math.floor((Date.now() - s.clockStartedAt) / 1000);
+                if (live === s.matchSec) return s;
+                return { ...s, matchSec: live };
+            });
+            setTickN(n => n + 1);
+        }
+        document.addEventListener('visibilitychange', onVis);
+        window.addEventListener('focus', onVis);
+        window.addEventListener('pageshow', onVis);
+        return () => {
+            document.removeEventListener('visibilitychange', onVis);
+            window.removeEventListener('focus', onVis);
+            window.removeEventListener('pageshow', onVis);
+        };
+    }, []);
 
     // getTime, recomputed each tick
     const getTime = useCallback((id) => {
@@ -1178,20 +1626,26 @@ function App({ tweaks, onShowWelcome }) {
             const wasRunning = s.phase === '1h' || s.phase === '2h';
             const willRun    = next === '1h' || next === '2h';
 
+            // Compute the matchSec value at the moment of transition. If the
+            // clock was running, the truth is the wall-clock-derived value.
+            const transitionSec = wasRunning && s.clockStartedAt
+                ? s.matchSecBase + Math.floor((Date.now() - s.clockStartedAt) / 1000)
+                : s.matchSec;
+
             if (wasRunning && !willRun) {
-                // commit
+                // commit player times against the transition moment
                 slots.forEach(sl => {
                     if (sl.playerId) {
                         const pt = playerTimes[sl.playerId];
                         if (pt.onSince !== null) {
-                            playerTimes[sl.playerId] = { total: pt.total + (s.matchSec - pt.onSince), onSince: null };
+                            playerTimes[sl.playerId] = { total: pt.total + (transitionSec - pt.onSince), onSince: null };
                         }
                     }
                 });
             } else if (!wasRunning && willRun) {
-                // anchor
+                // anchor on-pitch players to the transition moment
                 slots.forEach(sl => {
-                    if (sl.playerId) playerTimes[sl.playerId] = { ...playerTimes[sl.playerId], onSince: s.matchSec };
+                    if (sl.playerId) playerTimes[sl.playerId] = { ...playerTimes[sl.playerId], onSince: transitionSec };
                 });
             }
 
@@ -1201,26 +1655,33 @@ function App({ tweaks, onShowWelcome }) {
                 '2h': '— Second Half —',
                 ft:   '— Full Time —',
             };
-            history.push({ at: s.matchSec, kind: 'phase', text: labels[next] });
+            history.push({ at: transitionSec, kind: 'phase', text: labels[next] });
 
-            const out = { ...s, phase: next, playerTimes, history };
-            if (next === 'ht') out.htAt = s.matchSec;
-            if (next === 'ft') out.ftAt = s.matchSec;
+            const out = {
+                ...s,
+                phase: next,
+                playerTimes,
+                history,
+                matchSec: transitionSec,
+                // Wall-clock anchors: set when entering a running phase, cleared when leaving one
+                clockStartedAt: willRun ? Date.now() : null,
+                matchSecBase: willRun ? transitionSec : s.matchSecBase,
+            };
+            if (next === 'ht') out.htAt = transitionSec;
+            if (next === 'ft') out.ftAt = transitionSec;
             return out;
         });
     }
 
-    function resetAll() {
-        // Two-tap confirm — host apps (Sitecase etc.) often suppress window.confirm
-        if (!resetArmed) {
-            setResetArmed(true);
-            setTimeout(() => setResetArmed(false), 3000);
-            return;
-        }
-        setResetArmed(false);
+    function resetClockAndMatch() {
+        // Reset the match itself — clock, phase, score, cards, goals, history,
+        // player times. Keep the chosen pitch lineup so you can start a new
+        // match with the same XI.
         setState(s => ({
             ...s,
             matchSec: 0,
+            matchSecBase: 0,
+            clockStartedAt: null,
             score: { us: 0, them: 0 },
             phase: 'pre',
             htAt: null,
@@ -1229,8 +1690,49 @@ function App({ tweaks, onShowWelcome }) {
             history: [],
             playerTimes: emptyTimes(),
             playerStatus: emptyStatus(),
-            slots: s.slots.map(sl => ({ ...sl, playerId: null })),
+            slots: s.slots,
         }));
+        setResetSheet(false);
+    }
+    function clearPitch() {
+        // Take everyone off but leave clock/score/phase running.
+        setState(s => {
+            const playerTimes = { ...s.playerTimes };
+            const running = s.phase === '1h' || s.phase === '2h';
+            s.slots.forEach(sl => {
+                if (sl.playerId) {
+                    const pt = playerTimes[sl.playerId];
+                    if (pt && pt.onSince !== null) {
+                        playerTimes[sl.playerId] = { total: pt.total + (running ? (s.matchSec - pt.onSince) : 0), onSince: null };
+                    }
+                }
+            });
+            return {
+                ...s,
+                slots: s.slots.map(sl => ({ ...sl, playerId: null, locked: null })),
+                playerTimes,
+                history: [...(s.history || []), { at: s.matchSec, kind: 'card', text: '— Pitch cleared —' }],
+            };
+        });
+        setResetSheet(false);
+    }
+    function resetEverything() {
+        setState(s => ({
+            ...s,
+            matchSec: 0,
+            matchSecBase: 0,
+            clockStartedAt: null,
+            score: { us: 0, them: 0 },
+            phase: 'pre',
+            htAt: null,
+            ftAt: null,
+            goals: [],
+            history: [],
+            playerTimes: emptyTimes(),
+            playerStatus: emptyStatus(),
+            slots: s.slots.map(sl => ({ ...sl, playerId: null, locked: null })),
+        }));
+        setResetSheet(false);
     }
 
     // Goals
@@ -1281,7 +1783,15 @@ function App({ tweaks, onShowWelcome }) {
                     playerTimes[sl.playerId] = { ...playerTimes[sl.playerId], onSince: newSec };
                 }
             });
-            return { ...s, matchSec: newSec, playerTimes };
+            const running = s.phase === '1h' || s.phase === '2h';
+            return {
+                ...s,
+                matchSec: newSec,
+                matchSecBase: newSec,
+                // If running, re-anchor wall clock to "now" so elapsed counts from the new value
+                clockStartedAt: running ? Date.now() : null,
+                playerTimes,
+            };
         });
         setClockEdit(null);
     }
@@ -1339,6 +1849,36 @@ function App({ tweaks, onShowWelcome }) {
     function removeFromPitch(playerId) {
         const slotIdx = state.slots.findIndex(s => s.playerId === playerId);
         if (slotIdx >= 0) assignToSlot(slotIdx, null);
+    }
+
+    // Move an on-pitch player to a different slot. If the destination is
+    // occupied, the players swap. Both stay on the pitch — clocks are not
+    // committed (they're still playing, just in a new role).
+    function movePlayerToSlot(fromIdx, toIdx) {
+        if (fromIdx === toIdx) return;
+        setState(s => {
+            const slots = s.slots.map(x => ({ ...x }));
+            const fromSlot = slots[fromIdx];
+            const toSlot   = slots[toIdx];
+            if (!fromSlot || !toSlot) return s;
+            if (toSlot.locked) return s; // can't move into a red-card-locked slot
+            const movingId = fromSlot.playerId;
+            const displacedId = toSlot.playerId || null;
+            slots[toIdx]   = { ...toSlot,   playerId: movingId };
+            slots[fromIdx] = { ...fromSlot, playerId: displacedId };
+
+            const movingP    = movingId    ? SQUAD.find(p => p.id === movingId)    : null;
+            const displacedP = displacedId ? SQUAD.find(p => p.id === displacedId) : null;
+            const history = [...(s.history || [])];
+            if (movingP && displacedP) {
+                history.push({ at: s.matchSec, kind: 'sub', on: movingP.name, off: displacedP.name, pos: `${fromSlot.label} ↔ ${toSlot.label}` });
+            } else if (movingP) {
+                history.push({ at: s.matchSec, kind: 'on', on: movingP.name, pos: `${fromSlot.label} → ${toSlot.label}` });
+            }
+            return { ...s, slots, history };
+        });
+        setJustSubbed(toIdx);
+        setTimeout(() => setJustSubbed(null), 1100);
     }
 
     function changeFormation(name) {
@@ -1408,35 +1948,45 @@ function App({ tweaks, onShowWelcome }) {
     const slotSheet = activeSlot != null ? state.slots[activeSlot] : null;
     const slotPlayer = slotSheet?.playerId ? SQUAD.find(p => p.id === slotSheet.playerId) : null;
 
-    // Candidates for empty-slot picker, sorted: exact match, compat, all-rounders, then by least time
+    // Candidates for empty-slot picker. Returns ALL available players so the
+    // manager can pick someone out-of-position if no fits exist. Sorted:
+    //   exact match → fits (canPlay) → ALL-rounder → off-position
+    // Within each tier, by least time played.
     function candidatesFor(slotPos) {
         const onIds = new Set(state.slots.filter(s => s.playerId).map(s => s.playerId));
         const list = SQUAD.filter(p => {
             if (onIds.has(p.id)) return false;
             const st = state.playerStatus[p.id];
             if (st && (st.injured || st.red)) return false;
-            return canPlay(p, slotPos);
+            return true;
         });
+        const tier = (p) => {
+            if (p.positions.includes(slotPos)) return 0;     // EXACT
+            if (canPlay(p, slotPos) && !p.positions.includes('ALL')) return 1;  // FIT
+            if (p.positions.includes('ALL')) return 2;       // ALL-rounder
+            return 3;                                         // OFF-POSITION
+        };
         list.sort((a, b) => {
-            const aS = a.positions.includes(slotPos) ? 0 : a.positions.includes('ALL') ? 2 : 1;
-            const bS = b.positions.includes(slotPos) ? 0 : b.positions.includes('ALL') ? 2 : 1;
-            if (aS !== bS) return aS - bS;
+            const ta = tier(a), tb = tier(b);
+            if (ta !== tb) return ta - tb;
             return getTime(a.id) - getTime(b.id);
         });
         return list;
     }
 
-    // Slots a given player can fill (for "sub in" from bench)
+    // Slots a given player can fill (for "sub in" from bench). Returns
+    // every non-locked slot — fitting slots first, then off-position slots
+    // so the manager can override when needed.
     function slotsForPlayer(player) {
         const out = [];
         state.slots.forEach((s, i) => {
             if (s.locked) return; // can't replace a sent-off player's slot
-            if (canPlay(player, s.slotPos)) {
-                out.push({ idx: i, slot: s, current: s.playerId ? SQUAD.find(p => p.id === s.playerId) : null });
-            }
+            const fits = canPlay(player, s.slotPos);
+            out.push({ idx: i, slot: s, current: s.playerId ? SQUAD.find(p => p.id === s.playerId) : null, fits });
         });
-        // sort: empty slots first, then those held by players with most time
+        // Sort: fitting slots first, then empty inside each group, then by current player's most time
         out.sort((a, b) => {
+            if (a.fits !== b.fits) return a.fits ? -1 : 1;
             if (!a.current && b.current) return -1;
             if (a.current && !b.current) return 1;
             if (a.current && b.current) return getTime(b.current.id) - getTime(a.current.id);
@@ -1456,13 +2006,14 @@ function App({ tweaks, onShowWelcome }) {
                 state={state}
                 dispatch={(a) => setState(s => reduce(s, a))}
                 onAdvancePhase={advancePhase}
-                onReset={resetAll}
+                onReset={() => setResetSheet(true)}
                 onTapScore={onTapScore}
                 onSetCrest={setCrest}
                 onTapClock={onTapClock}
-                resetArmed={resetArmed}
+                resetArmed={false}
                 sync={sync}
                 onShowWelcome={onShowWelcome}
+                onShowHelp={() => setHelpSheet(true)}
             />
 
             <StatsRail state={state} getTime={getTime} />
@@ -1484,6 +2035,7 @@ function App({ tweaks, onShowWelcome }) {
                                     onClick={() => changeFormation(name)}>{name}</button>
                             ))}
                         </div>
+                        <Lineups state={state} setState={setState} onManage={() => setLineupSheet(true)} />
                         <Pitch state={state} getTime={getTime}
                                onSlotTap={si => setActiveSlot(si)}
                                goalsByPlayer={goalsByPlayer}
@@ -1569,7 +2121,7 @@ function App({ tweaks, onShowWelcome }) {
                                   onPick={(id) => { assignToSlot(activeSlot, id); setActiveSlot(null); }} />
                 ))}
                 {slotSheet && !slotSheet.locked && candidatesFor(slotSheet.slotPos).length === 0 && (
-                    <div className="empty">No available player fits this slot.</div>
+                    <div className="empty">No available players — everyone fit is already on the pitch.</div>
                 )}
             </Sheet>
 
@@ -1608,6 +2160,54 @@ function App({ tweaks, onShowWelcome }) {
                                           onPick={(id) => { assignToSlot(activeSlot, id); setActiveSlot(null); }} />
                         ))}
 
+                        {(() => {
+                            const moveTargets = state.slots
+                                .map((sl, i) => ({ sl, i }))
+                                .filter(({ sl, i }) => i !== activeSlot && !sl.locked);
+                            if (moveTargets.length === 0) return null;
+                            // sort: fitting empty, fitting occupied, off-pos empty, off-pos occupied
+                            moveTargets.sort((a, b) => {
+                                const aFit = canPlay(slotPlayer, a.sl.slotPos);
+                                const bFit = canPlay(slotPlayer, b.sl.slotPos);
+                                if (aFit !== bFit) return aFit ? -1 : 1;
+                                if (!a.sl.playerId && b.sl.playerId) return -1;
+                                if (a.sl.playerId && !b.sl.playerId) return 1;
+                                return 0;
+                            });
+                            return (
+                                <>
+                                    <div style={{fontSize:11,color:'var(--text-3)',textTransform:'uppercase',letterSpacing:'0.1em',margin:'14px 4px 6px'}}>
+                                        Move {slotPlayer.name.split(' ')[0]} to…
+                                    </div>
+                                    {moveTargets.slice(0, 12).map(({ sl, i }) => {
+                                        const fits = canPlay(slotPlayer, sl.slotPos);
+                                        const occupant = sl.playerId ? SQUAD.find(p => p.id === sl.playerId) : null;
+                                        return (
+                                            <button
+                                                key={i}
+                                                className={"cand" + (fits ? '' : ' offpos')}
+                                                onClick={() => { movePlayerToSlot(activeSlot, i); setActiveSlot(null); }}
+                                            >
+                                                <div className="cand-num">{sl.label}</div>
+                                                <div className="cand-info">
+                                                    <div className="cand-name">
+                                                        {occupant ? `Swap with ${occupant.name}` : 'Move to empty slot'}
+                                                    </div>
+                                                    <div className="cand-meta">
+                                                        <span className={"cand-tag " + (fits ? 'compat' : 'offpos')}>{fits ? 'FIT' : 'OFF-POS'}</span>
+                                                        {sl.label}{occupant ? ` · #${occupant.n}` : ' · open'}
+                                                    </div>
+                                                </div>
+                                                <div className="cand-time">
+                                                    {occupant ? fmt(getTime(occupant.id)) : '—'}
+                                                </div>
+                                            </button>
+                                        );
+                                    })}
+                                </>
+                            );
+                        })()}
+
                         <button className="sheet-action danger" onClick={() => { assignToSlot(activeSlot, null); setActiveSlot(null); }}>
                             <span className="ic">↓</span> Take off (no replacement)
                         </button>
@@ -1624,13 +2224,20 @@ function App({ tweaks, onShowWelcome }) {
             >
                 {activePlayer && (() => {
                     const slots = slotsForPlayer(activePlayer.player);
-                    if (slots.length === 0) return <div className="empty">No compatible position in current formation.</div>;
-                    return slots.map(({ idx, slot, current }) => (
-                        <button key={idx} className="cand" onClick={() => { assignToSlot(idx, activePlayer.player.id); setActivePlayer(null); }}>
+                    if (slots.length === 0) return <div className="empty">No available slots — every position is locked.</div>;
+                    return slots.map(({ idx, slot, current, fits }) => (
+                        <button
+                            key={idx}
+                            className={"cand" + (fits ? '' : ' offpos')}
+                            onClick={() => { assignToSlot(idx, activePlayer.player.id); setActivePlayer(null); }}
+                        >
                             <div className="cand-num">{slot.label}</div>
                             <div className="cand-info">
                                 <div className="cand-name">{current ? 'Replace ' + current.name : 'Fill empty slot'}</div>
-                                <div className="cand-meta">{slot.label} · {current ? '#' + current.n : 'open'}</div>
+                                <div className="cand-meta">
+                                    <span className={"cand-tag " + (fits ? 'compat' : 'offpos')}>{fits ? 'FIT' : 'OFF-POS'}</span>
+                                    {slot.label} · {current ? '#' + current.n : 'open'}
+                                </div>
                             </div>
                             <div className="cand-time">{current ? fmt(getTime(current.id)) : '—'}</div>
                         </button>
@@ -1717,6 +2324,45 @@ function App({ tweaks, onShowWelcome }) {
                     </>
                 )}
             </Sheet>
+            {/* Reset menu — choose what to reset */}
+            <Sheet
+                open={resetSheet}
+                onClose={() => setResetSheet(false)}
+                title="Reset"
+                sub="Pick what you want to clear."
+            >
+                <ResetAction
+                    label="New match"
+                    sub="Clear clock, score, cards, goals, history & player times. Keeps the current pitch lineup so you can kick off straight away."
+                    icon="↻"
+                    onConfirm={resetClockAndMatch}
+                />
+                <ResetAction
+                    label="Clear the pitch"
+                    sub="Take every player off. Clock, score and match state stay where they are."
+                    icon="⬇"
+                    onConfirm={clearPitch}
+                />
+                <ResetAction
+                    label="Reset everything"
+                    sub="Wipe clock, score, lineup, history and player times. Same as starting from scratch."
+                    icon="⌫"
+                    tone="danger"
+                    onConfirm={resetEverything}
+                />
+            </Sheet>
+
+            {/* Lineup manage sheet — rename / delete saved lineups */}
+            <LineupManageSheet
+                open={lineupSheet}
+                onClose={() => setLineupSheet(false)}
+                state={state}
+                setState={setState}
+            />
+
+            {/* Help & guide */}
+            <HelpSheet open={helpSheet} onClose={() => setHelpSheet(false)} />
+
             {/* Clock editor */}
             <Sheet
                 open={!!clockEdit}
