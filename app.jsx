@@ -1,4 +1,4 @@
-/* global React, ReactDOM, SQUAD, FORMATIONS, POS_COMPAT, DEF_MID, fmt, canPlay, shortName, posClass, useCloudSync, SyncBadge */
+/* global React, ReactDOM, SQUAD, FORMATIONS, POS_COMPAT, DEF_MID, fmt, canPlay, shortName, posClass, useCloudSync, SyncBadge, SessionExpiredBanner, Welcome */
 /* Football Squad Manager — main app */
 
 const { useState, useEffect, useRef, useMemo, useCallback } = React;
@@ -139,7 +139,7 @@ function Crest({ team, src, letter, onSet }) {
     );
 }
 
-function TopBar({ state, dispatch, onAdvancePhase, onReset, onTapScore, onSetCrest, onTapClock, resetArmed, sync }) {
+function TopBar({ state, dispatch, onAdvancePhase, onReset, onTapScore, onSetCrest, onTapClock, resetArmed, sync, onShowWelcome }) {
     const { score, teamName, crest, phase, matchSec } = state;
     const info = PHASE_INFO[phase];
     const usLetter   = teamName.us.trim().charAt(0).toUpperCase()   || '+';
@@ -151,7 +151,7 @@ function TopBar({ state, dispatch, onAdvancePhase, onReset, onTapScore, onSetCre
                 <div className={"tb-half " + phase + (info.live ? ' live' : '')}>
                     <span className="dot"></span>{info.label}
                 </div>
-                {sync && <SyncBadge sync={sync} />}
+                {sync && <SyncBadge sync={sync} onShowWelcome={onShowWelcome} />}
                 <button className="tb-clock" onClick={onTapClock} title="Tap to edit">
                     {fmt(matchSec)}
                 </button>
@@ -1105,7 +1105,7 @@ function SquadEditor({ state, setState }) {
 // ─────────────────────────────────────────────────────────────
 //  APP ROOT
 // ─────────────────────────────────────────────────────────────
-function App({ tweaks }) {
+function App({ tweaks, onShowWelcome }) {
     const [state, setState] = useState(loadInitial);
     const [tickN, setTickN] = useState(0); // forces re-render once per second while running
     const [activeSlot, setActiveSlot] = useState(null); // slot index or null
@@ -1451,6 +1451,7 @@ function App({ tweaks }) {
 
     return (
         <div className="app">
+            <SessionExpiredBanner sync={sync} />
             <TopBar
                 state={state}
                 dispatch={(a) => setState(s => reduce(s, a))}
@@ -1461,6 +1462,7 @@ function App({ tweaks }) {
                 onTapClock={onTapClock}
                 resetArmed={resetArmed}
                 sync={sync}
+                onShowWelcome={onShowWelcome}
             />
 
             <StatsRail state={state} getTime={getTime} />
@@ -1802,6 +1804,7 @@ function inkFor(hex) {
 
 function Root() {
     const [t, setTweak] = useTweaks(DEFAULTS);
+    const [showWelcome, setShowWelcome] = React.useState(() => !window.welcomeDismissed?.());
 
     React.useEffect(() => {
         document.documentElement.style.setProperty('--accent', t.accent);
@@ -1810,7 +1813,8 @@ function Root() {
 
     return (
         <>
-            <App tweaks={t} />
+            <App tweaks={t} onShowWelcome={() => setShowWelcome(true)} />
+            {showWelcome && <Welcome onDismiss={() => setShowWelcome(false)} />}
             <TweaksPanel title="Tweaks">
                 <TweakSection label="Look & feel">
                     <TweakRadio
@@ -1840,6 +1844,12 @@ function Root() {
                 <TweakSection label="Sections">
                     <TweakToggle label="Position pool tab" value={t.show_pool}    onChange={v => setTweak('show_pool', v)} />
                     <TweakToggle label="Match log tab"     value={t.show_history} onChange={v => setTweak('show_history', v)} />
+                </TweakSection>
+                <TweakSection label="Account">
+                    <TweakButton
+                        label="Show welcome screen"
+                        onClick={() => { window.resetWelcome?.(); setShowWelcome(true); }}
+                    />
                 </TweakSection>
             </TweaksPanel>
         </>
